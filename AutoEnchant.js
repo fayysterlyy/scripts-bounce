@@ -652,7 +652,7 @@ script.registerModule({
             // enchant menusu disindaki tum gui'ler (chest vs) -> bekle
             const menu = menuNow();
             if (!menu) {
-                if (lastMenu !== null) { lastMenu = null; lastS0 = ""; stuckReset(); done = false; toldBook = false; toldLapis = false; toldXp = false; pipe = 0; }
+                if (lastMenu !== null) { lastMenu = null; lastS0 = ""; stuckReset(); done = false; toldBook = false; toldLapis = false; toldXp = false; toldBottle = false; pipe = 0; }
                 return;
             }
 
