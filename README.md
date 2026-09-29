@@ -8,7 +8,7 @@ LiquidBounce NextGen (MC 26.2) scriptleri.
 |---|---|---|
 | AutoEnchant.js | 1.8.1 | Enchanting table otomatik buyuleme + AutoXp (xp sisesiyle otomatik doldurma) |
 | AutoMetin.js | 1.0.4 | 3 istasyon arasi Baritone ile git, bloga bakarak kir (bedrock gorene kadar), dongu |
-| OreSim.js | 1.0.0 | Seed tabanli vanilla ore simulasyonu + ESP |
+| OreSim.js | 1.0.2 | Seed tabanli vanilla ore simulasyonu + ESP |
 
 ## Kurulum
 
