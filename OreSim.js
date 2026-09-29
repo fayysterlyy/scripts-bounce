@@ -1008,7 +1008,6 @@ function btSetGoal(x, y, z) {
 }
 
 function btCancel() {
-    if (!btMode) return;
     if (btMode === "direct") {
         if (btPb) btPb.cancelEverything();
         else btIb.getPathingBehavior().cancelEverything();
