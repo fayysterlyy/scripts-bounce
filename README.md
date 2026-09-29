@@ -18,4 +18,4 @@ LiquidBounce NextGen (MC 26.2) scriptleri.
 
 ## Surumler
 
-Her guncellemede degisen script + ne degistigi CHANGELOG.md'ye islenir.
+Surumler [Releases](https://github.com/fayysterlyy/scripts-bounce/releases) sayfasinda. Her surumun aciklamasinda ne degistigi yazar.
