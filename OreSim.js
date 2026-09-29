@@ -9,7 +9,7 @@
 
 const script = registerScript({
     name: "OreSim",
-    version: "1.0.0",
+    version: "1.0.2",
     authors: ["kral"]
 });
 
@@ -931,7 +931,7 @@ function tick() {
 
 /* ================= Baritone hedefleme ================= */
 
-const nav = { n: 0, x: 0, y: 0, z: 0, has: false, still: 0, lx: 0, ly: 0, lz: 0, black: {}, warnN: 0, members: null, gd: Infinity, gdTicks: 0, retry: 0 };
+const nav = { n: 0, x: 0, y: 0, z: 0, has: false, still: 0, lx: 0, ly: 0, lz: 0, black: {}, warnN: 0, members: null, gd: Infinity, gdTicks: 0, retry: 0, forceFull: false };
 let btMode = null; // "direct" | "reflect"
 let btErr = "";
 let btIb = null, btGoalCls = null, btCgp = null, btPb = null; // direct mod
@@ -962,8 +962,10 @@ function btTryReflect(cl) {
     // cancelEverything CustomGoalProcess'te degil, PathingBehavior'da
     const pb = ib.getClass().getMethod("getPathingBehavior").invoke(ib);
     const cancelM = pb.getClass().getMethod("cancelEverything");
+    let gsM = null;
+    try { gsM = apiC.getMethod("getSettings"); } catch (e) { /* yoksay */ }
     // hepsi basarili -> ancak kaydet
-    btR = { cgp: cgp, ctor: ctor, setM: setM, pb: pb, cancelM: cancelM };
+    btR = { cgp: cgp, ctor: ctor, setM: setM, gsM: gsM, pb: pb, cancelM: cancelM };
     btMode = "reflect";
 }
 
@@ -1021,6 +1023,87 @@ function navStop() {
         try { btCancel(); } catch (e) { /* yoksay */ }
         nav.has = false;
         nav.still = 0;
+    }
+}
+
+// Baritone hiz ayarlari: hedefe giderken blok kirma aralarinda bekleme yapmasin.
+// walkWhileBreaking: durmadan kir; pauseMiningForFallingBlocks=false: kirilan
+// blogun fizigini beklemeden devam et (NOT: ustte kum/cakil varsa uzerine duser).
+// Sadece ore-nav aktifken gecerli; nav kapaninca onceki degere dondurulur.
+const BT_FAST = [
+    ["walkWhileBreaking", true],
+    ["pauseMiningForFallingBlocks", false],
+    ["sprintAscends", true],
+    ["allowSprint", true]
+];
+let btFast = false;
+let btFastPrev = {};
+let btFastTold = false;
+
+function btFastSettingsObj() {
+    try {
+        if (btMode === "direct") {
+            const BA = Java.type("baritone.api.BaritoneAPI");
+            try { return BA.getSettings(); } catch (e1) {
+                if (btIb) return btIb.getSettings();
+                throw e1;
+            }
+        } else if (btMode === "reflect" && btR && btR.gsM) {
+            return btR.gsM.invoke(null);
+        }
+    } catch (e) { /* yoksay */ }
+    return null;
+}
+
+function btFastApply() {
+    const so = btFastSettingsObj();
+    if (!so) {
+        if (!btFastTold) { btFastTold = true; chat("baritone ayarlarina erisilemedi"); }
+        return false;
+    }
+    const BOOL = Java.type("java.lang.Boolean");
+    const fails = [];
+    for (let i = 0; i < BT_FAST.length; i++) {
+        const nm = BT_FAST[i][0];
+        try {
+            let setting = null;
+            if (btMode === "direct") setting = so[nm];
+            else setting = so.getClass().getField(nm).get(so);
+            if (!setting) throw new Error("yok");
+            if (!(nm in btFastPrev)) {
+                try { btFastPrev[nm] = !!setting.value; } catch (e) { /* yoksay */ }
+            }
+            setting.getClass().getField("value").set(setting, BT_FAST[i][1] ? BOOL.TRUE : BOOL.FALSE);
+        } catch (e) { fails.push(nm); }
+    }
+    if (fails.length > 0 && !btFastTold) {
+        btFastTold = true;
+        chat("baritone hiz ayari yazilamadi: " + fails.join(","));
+    }
+    return fails.length === 0;
+}
+
+function btFastRestore() {
+    const so = btFastSettingsObj();
+    if (!so) return;
+    try {
+        const BOOL = Java.type("java.lang.Boolean");
+        for (const nm in btFastPrev) {
+            try {
+                let setting = null;
+                if (btMode === "direct") setting = so[nm];
+                else setting = so.getClass().getField(nm).get(so);
+                if (!setting) continue;
+                setting.getClass().getField("value").set(setting, btFastPrev[nm] ? BOOL.TRUE : BOOL.FALSE);
+            } catch (e) { /* yoksay */ }
+        }
+    } catch (e) { /* yoksay */ }
+}
+
+function btFastOff() {
+    if (btFast) {
+        try { btFastRestore(); } catch (e) { /* yoksay */ }
+        btFast = false;
     }
 }
 
@@ -1125,8 +1208,50 @@ function navStuck(cur) {
     }
 }
 
+// hizli hedef degisimi: mevcut hedef kirildiysa 10 tick'lik nav kapisini
+// beklemeden AYNI tick icinde kumeden yenisini sec (kume rebuild YOK).
+// true = islendi (bu ticklik baska nav isi yok).
+function navFastRetarget() {
+    try {
+        const st = blockAt(mc.level, nav.x, nav.y, nav.z);
+        if (st !== null && !st.isAir()) return false; // hedef duruyor
+    } catch (e) { return false; }
+    if (nav.members && nav.members.length > 0) {
+        try {
+            const px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
+            let bx = 0, by = 0, bz = 0, bd = Infinity;
+            for (const k of nav.members) {
+                if (nav.black[k]) continue;
+                const c = k.split(",");
+                const x = +c[0], y = +c[1], z = +c[2];
+                let air = false;
+                try {
+                    const s = blockAt(mc.level, x, y, z);
+                    air = s === null || s.isAir();
+                } catch (e) { continue; }
+                if (air) continue;
+                const dx = x + 0.5 - px, dy = y + 0.5 - py, dz = z + 0.5 - pz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < bd) { bd = d; bx = x; by = y; bz = z; }
+            }
+            if (bd < Infinity) {
+                try { btSetGoal(bx, by, bz); } catch (e) { errOnce("baritone", e); return false; }
+                nav.x = bx; nav.y = by; nav.z = bz;
+                nav.has = true; nav.still = 0; nav.gd = Infinity; nav.gdTicks = 0; nav.retry = 0;
+                nav.lx = px; nav.ly = py; nav.lz = pz;
+                return true;
+            }
+        } catch (e) { /* yoksay */ }
+    }
+    // kume bitti: tam akisi kapisiz calistir (sonraki tick)
+    nav.has = false;
+    nav.members = null;
+    nav.forceFull = true;
+    return true;
+}
+
 function navTick() {
-    if (!active || !cfg("baritone", false)) { navStop(); return; }
+    if (!active || !cfg("baritone", false)) { navStop(); btFastOff(); return; }
     if (!mc.player || !mc.level) return;
     nav.n++;
     if (!btMode && (nav.n === 1 || nav.n % 50 === 0)) baritoneReady();
@@ -1137,7 +1262,10 @@ function navTick() {
         }
         return;
     }
-    if (nav.n % 10 !== 0) return;
+    // hedef o tick kirildiysa kapiyi beklemeden aninda yeni hedef
+    if (nav.has && navFastRetarget()) return;
+    if (nav.n % 10 !== 0 && !nav.forceFull) return;
+    nav.forceFull = false;
 
     const px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
     const list = collectPositions();
@@ -1193,6 +1321,7 @@ function navTick() {
         for (const p of cur) nav.black[p.k] = true;
         nav.members = null;
         navStop();
+        nav.forceFull = true; // kume bitti: yenisini kapisiz sec
         return;
     }
 
@@ -1211,6 +1340,7 @@ function navTick() {
         nav.gdTicks = 0;
         nav.retry = 0;
         nav.lx = px; nav.ly = py; nav.lz = pz;
+        if (!btFast && btFastApply()) btFast = true;
         return;
     }
 
@@ -1318,6 +1448,10 @@ script.registerModule({
         nav.black = {};
         nav.members = null;
         nav.warnN = 0;
+        nav.forceFull = false;
+        btFast = false;
+        btFastPrev = {};
+        btFastTold = false;
         chat("aktif. seed: " + cfg("seed", "-8064503984169283406"));
     });
 
@@ -1325,8 +1459,10 @@ script.registerModule({
         active = false;
         cache.clear();
         navStop();
+        btFastOff();
         nav.black = {};
         nav.members = null;
+        nav.forceFull = false;
     });
 
     mod.on("worldChange", () => {
@@ -1334,8 +1470,10 @@ script.registerModule({
         regDim = null;
         ores = [];
         navStop();
+        btFastOff();
         nav.black = {};
         nav.members = null;
+        nav.forceFull = false;
     });
 
     mod.on("playerTick", () => {
