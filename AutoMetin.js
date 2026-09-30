@@ -2,8 +2,7 @@
 // 3 istasyon: Baritone ile git -> hedef bloga BAKARAK kir (blok respawn olur,
 // bedrock gorene kadar ayni konum kirilir) -> bedrock ise sonraki istasyon,
 // 3. istasyon bedrock ise basa don. Kirarken otomatik kazma + her 8 sn ziplama.
-// Kirilacak bloklar ClickGUI ayarlarindan "X Y Z" yazilir (elmas/zumrut/altin);
-// durus noktasi blogun 1 altidir.
+// Gitme koordinatlari ClickGUI'den "X Y Z" yazilir (1/2/3 istasyon).
 // Mekanik 26.2 kaynagindan (MultiPlayerGameMode/LocalPlayer):
 //   - continueDestroyBlock(pos, face): ayni hedefte cagrilmasi guvenli
 //     (progress sifirlanmaz), havada no-op, once carried-slotu senkronlar
@@ -15,7 +14,7 @@
 
 const script = registerScript({
     name: "AutoMetin",
-    version: "1.0.4",
+    version: "1.0.5",
     authors: ["kral"]
 });
 
@@ -27,18 +26,25 @@ const ContainerInput = Java.type("net.minecraft.world.inventory.ContainerInput")
 const EntityAnchor = Java.type("net.minecraft.commands.arguments.EntityAnchorArgument");
 const Items = Java.type("net.minecraft.world.item.Items");
 
-// kirilacak bloklar: ClickGUI'den "X Y Z" yazilir (orn. "38 93 18").
-// durus noktasi otomatik: kirilacak blogun 1 altindaki blok.
-const DEF_MINE = [
-    [38, 93, 18],   // elmas (varsayilan)
-    [53, 93, 0],    // zumrut (varsayilan)
-    [38, 93, -18]   // altin (varsayilan)
+// gitme koordinatlari ClickGUI'den "X Y Z" yazilir (1/2/3 istasyon).
+// kirma bloklari SABIT (degistirilmez).
+const DEF_GOTO = [
+    [36, 92, 18],
+    [53, 92, 2],
+    [38, 92, -16]
 ];
-const MINE_KEYS = ["mine1", "mine2", "mine3"];
+const DEF_MINE = [
+    [38, 93, 18],
+    [53, 93, 0],
+    [38, 93, -18]
+];
+const GOTO_KEYS = ["goto1", "goto2", "goto3"];
 let STS = []; // aktif istasyonlar (her tick ayarlardan kurulur)
 let toldCoord = false;
+let failN = 0;       // art arda ulasilamayan hedef sayisi (tani icin)
+let toldFail = false;
 
-function parseMine(text, fb) {
+function parseCoord(text, fb) {
     try {
         const p = String(text).trim().split(/\s+/);
         if (p.length < 3) return { v: fb, ok: false };
@@ -52,14 +58,14 @@ function parseMine(text, fb) {
 function stations() {
     const out = [];
     for (let i = 0; i < 3; i++) {
-        const raw = cfg(MINE_KEYS[i], "");
-        const r = parseMine(raw, DEF_MINE[i]);
-        if (!r.ok && String(raw).trim() !== "" && !toldCoord) {
+        const rg = cfg(GOTO_KEYS[i], "");
+        const gg = parseCoord(rg, DEF_GOTO[i]);
+        if (!gg.ok && String(rg).trim() !== "" && !toldCoord) {
             toldCoord = true;
             msg("koordinat hatali, varsayilan kullaniliyor");
         }
-        const b = r.v;
-        out.push({ gx: b[0], gy: b[1] - 1, gz: b[2], bx: b[0], by: b[1], bz: b[2] });
+        const g = gg.v, b = DEF_MINE[i];
+        out.push({ gx: g[0], gy: g[1], gz: g[2], bx: b[0], by: b[1], bz: b[2] });
     }
     return out;
 }
@@ -328,12 +334,30 @@ function blockAt(s) {
     return mc.level.getBlockState(new BlockPos(s.bx, s.by, s.bz));
 }
 
+// ulasilamiyor teshisi: 3 basarisiz denemeden sonra 1 kez soyle.
+// (sebep cogu zaman kapali yol + allowBreak=false olur)
+function checkFail() {
+    if (failN < 3 || toldFail) return;
+    toldFail = true;
+    let d = "";
+    try {
+        const s = STS[st];
+        const dx = (s.gx + 0.5) - mc.player.getX();
+        const dy = (s.gy + 0.5) - mc.player.getY();
+        const dz = (s.gz + 0.5) - mc.player.getZ();
+        d = " (" + Math.sqrt(dx * dx + dy * dy + dz * dz).toFixed(1) + " blok)";
+    } catch (e) { /* yoksay */ }
+    msg("istasyon " + (st + 1) + " ulasilamiyor" + d + " - yol kapali olabilir (allowBreak kapaliysa kirarak gecemez)");
+}
+
 /* ================= Fazlar ================= */
 
 function enterGoto(i) {
     st = i;
     phase = "goto";
     goalSet = false;
+    failN = 0;
+    toldFail = false;
     jumpOff();
     try { mc.gameMode.stopDestroyBlock(); } catch (e) { /* yoksay */ }
 }
@@ -342,6 +366,8 @@ function enterMine(i) {
     st = i;
     phase = "mine";
     goalSet = false;
+    failN = 0;
+    toldFail = false;
     try { btCancel(); } catch (e) { /* yoksay */ }
     try { mc.gameMode.stopDestroyBlock(); } catch (e) { /* yoksay */ }
     jumpOff();
@@ -382,7 +408,7 @@ function doGoto(s) {
     } catch (e) { /* yoksay */ }
     if (dist < 1.5) { enterMine(st); return; }
     // timeout (30 sn): hedefi tazele
-    if (tickN - gotoT > 600) { goalSet = false; return; }
+    if (tickN - gotoT > 600) { goalSet = false; failN++; checkFail(); return; }
     // takilma: 10 tick'te bir konum karsilastir
     if (tickN % 10 === 0) {
         try {
@@ -391,7 +417,7 @@ function doGoto(s) {
             lx = px; ly = py; lz = pz;
             if (mv < 0.1) {
                 still += 10;
-                if (still >= 200) { still = 0; goalSet = false; }
+                if (still >= 200) { still = 0; goalSet = false; failN++; checkFail(); }
             } else {
                 still = 0;
             }
@@ -439,9 +465,9 @@ script.registerModule({
     category: "Player",
     description: "3 istasyon: Baritone ile git, bloga bakarak kir (bedrock gorene kadar), basa don",
     settings: {
-        mine1: Setting.text({ name: "Elmas Koordinati", default: "38 93 18" }),
-        mine2: Setting.text({ name: "Zumrut Koordinati", default: "53 93 0" }),
-        mine3: Setting.text({ name: "Altin Koordinati", default: "38 93 -18" }),
+        goto1: Setting.text({ name: "1. Gitme Koordinati", default: "36 92 18" }),
+        goto2: Setting.text({ name: "2. Gitme Koordinati", default: "53 92 2" }),
+        goto3: Setting.text({ name: "3. Gitme Koordinati", default: "38 92 -16" }),
         messages: Setting.boolean({ name: "Mesajlar", default: true })
     }
 }, (m) => {
@@ -463,6 +489,8 @@ script.registerModule({
         toldNoPick = false;
         toldNoBt = false;
         toldCoord = false;
+        failN = 0;
+        toldFail = false;
         btMode = null;
         jumpOff();
         if (!baritoneReady() && !toldNoBt) {
